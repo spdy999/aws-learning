@@ -33,12 +33,31 @@ output "private_route_table_id" {
   value       = aws_route_table.private.id
 }
 
+output "bastion_public_ip" {
+  description = "Bastion public IP — SSH entry point"
+  value       = aws_instance.bastion.public_ip
+}
+
 output "private_ec2_instance_id" {
-  description = "Private EC2 instance ID (use with SSM Session Manager)"
+  description = "Private EC2 instance ID"
   value       = aws_instance.private.id
 }
 
 output "private_ec2_private_ip" {
   description = "Private EC2 private IP"
   value       = aws_instance.private.private_ip
+}
+
+output "ssh_commands" {
+  description = "Commands to connect to the private EC2 via bastion"
+  value       = <<-EOT
+    # Step 1 — SSH to bastion
+    ssh -i nat-gateway/terraform/bastion.pem ec2-user@${aws_instance.bastion.public_ip}
+
+    # Step 2 — from bastion, SSH to private EC2
+    ssh -i bastion.pem ec2-user@${aws_instance.private.private_ip}
+
+    # Or use SSH agent forwarding (one command):
+    ssh -A -i nat-gateway/terraform/bastion.pem ec2-user@${aws_instance.bastion.public_ip} -J "" ssh ec2-user@${aws_instance.private.private_ip}
+  EOT
 }
