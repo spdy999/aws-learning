@@ -1,0 +1,99 @@
+name: Deploy to Fargate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "fargate/**"
+      - ".github/workflows/deploy-fargate.yml"
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: "Set to 'true' to destroy all resources"
+        required: false
+        default: "false"
+
+env:
+  AWS_REGION: us-east-1
+  APP_NAME: hello-fargate
+  TF_DIR: fargate/terraform
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # KodeKloud provides temporary credentials — include AWS_SESSION_TOKEN
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      # TF_STATE_BUCKET is a GitHub Actions variable (not secret) — set it in
+      # repo Settings > Variables > Actions. Create the bucket once manually:
+      #   aws s3 mb s3://<your-bucket> --region us-east-1
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=fargate/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      # ── Destroy path ───────────────────────────────────────────────────────
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.destroy == 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform destroy -auto-approve
+      # ── Deploy path ────────────────────────────────────────────────────────
+
+      # Create ECR first so we have a registry to push to
+      - name: Ensure ECR repository exists
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve -target=aws_ecr_repository.app
+
+      - name: Login to Amazon ECR
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        id: build
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$APP_NAME:$IMAGE_TAG fargate/app/
+          docker push $REGISTRY/$APP_NAME:$IMAGE_TAG
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Terraform Plan
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_image_tag: ${{ steps.build.outputs.image_tag }}
+        run: terraform plan
+
+      - name: Terraform Apply
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_image_tag: ${{ steps.build.outputs.image_tag }}
+        run: terraform apply -auto-approve
+
+      - name: Show outputs
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform output

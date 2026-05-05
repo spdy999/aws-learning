@@ -1,0 +1,68 @@
+name: Deploy VPC
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vpc/**"
+      - ".github/workflows/deploy-vpc.yml"
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: "Set to 'true' to destroy all resources"
+        required: false
+        default: "false"
+
+env:
+  AWS_REGION: us-east-1
+  TF_DIR: vpc/terraform
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=vpc/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      # ── Destroy path ─────────────────────────────────────────────────────────
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.destroy == 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform destroy -auto-approve
+
+      # ── Deploy path ──────────────────────────────────────────────────────────
+      - name: Terraform Plan
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform plan
+
+      - name: Terraform Apply
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve
+
+      - name: Show outputs
+        if: ${{ github.event.inputs.destroy != 'true' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform output
